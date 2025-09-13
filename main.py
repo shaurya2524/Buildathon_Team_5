@@ -1,4 +1,3 @@
-
 import os
 import sys
 import json
@@ -12,14 +11,13 @@ from typing import List, Dict, Any
 # --- Core Dependencies ---
 import pdfplumber
 from PIL import Image
-from groq import AsyncGroq
+from groq import AsyncGroq # Use the Asynchronous client for FastAPI
 
 # --- FastAPI Dependencies ---
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import os
 
 # Load .env file
 load_dotenv()
@@ -32,7 +30,6 @@ TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "qwen/qwen3-32b")  # text-only on Groq
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # image+text
 
 # Initialize the Asynchronous Groq client.
-# It automatically looks for the GROQ_API_KEY environment variable.
 try:
     client = AsyncGroq()
 except Exception as e:
@@ -40,7 +37,6 @@ except Exception as e:
     sys.exit(1)
 
 # The target schema for our intelligent form filler.
-# This could also be loaded from a config file or a database.
 INSURANCE_FORM_FIELDS = [
     "Full Name", "Address", "Phone Number", "Email", "Policy Number",
     "Type of Claim", "Date of Incident", "Location of Incident",
@@ -55,7 +51,7 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# Add CORS middleware to allow frontend requests from any origin.
+# Add CORS middleware to allow frontend requests.
 # For production, you should restrict this to your frontend's domain.
 app.add_middleware(
     CORSMiddleware,
@@ -78,6 +74,7 @@ def encode_image_as_data_url(image_path: str) -> str:
     mime = mime or "image/jpeg"
     with open(image_path, "rb") as f:
         raw = f.read()
+
     max_bytes = 4 * 1024 * 1024
     if len(raw) <= max_bytes:
         return f"data:{mime};base64," + base64.b64encode(raw).decode("utf-8")
@@ -94,7 +91,7 @@ def encode_image_as_data_url(image_path: str) -> str:
             return f"data:image/jpeg;base64," + base64.b64encode(data).decode("utf-8")
         quality = max(50, quality - 10)
         w, h = int(w * 0.85), int(h * 0.85)
-        img = img.resize((max(1, w), max(1, h)), Image.LANCZOS)
+        img = img.resize((max(1, w), max(1, h)), Image.Resampling.LANCZOS)
     return f"data:image/jpeg;base64," + base64.b64encode(data).decode("utf-8")
 
 def extract_text_from_pdf(file_path: str) -> str:
@@ -122,7 +119,7 @@ async def extract_raw_info_from_doc(file_path: str, filename: str) -> dict:
         elif filename.lower().endswith(".pdf"):
             text = extract_text_from_pdf(file_path)
             if not text:
-                return {"warning": "No text could be extracted from this PDF."}
+                return {"warning": f"No text could be extracted from {filename}."}
             model = TEXT_MODEL
             content = f"Extract all key-value pairs from the following text. Respond with only a valid, flat JSON object:\n\n{text}"
         else:
@@ -139,22 +136,22 @@ async def extract_raw_info_from_doc(file_path: str, filename: str) -> dict:
         )
         return json.loads(resp.choices[0].message.content)
     except Exception as e:
-        return {"error": f"LLM extraction failed for {filename}: {e}"}
+        return {"error": f"LLM extraction failed for {filename}: {str(e)}"}
 
 async def fill_missing_fields_with_llm(missing_fields: list, source_data: dict) -> dict:
-    """Uses an LLM to intelligently map extracted source data to missing form fields."""
+    """Uses an LLM to intelligently map combined extracted source data to missing form fields."""
     if not missing_fields or not source_data:
         return {}
 
     prompt = f"""
-You are an intelligent data mapping assistant. Your task is to fill in missing insurance form fields using data from a new document.
+You are an intelligent data mapping assistant. Your task is to fill in missing insurance form fields using data aggregated from one or more documents.
 
 **1. Missing Fields from the Insurance Form:**
 ```json
 {json.dumps(missing_fields, indent=2)}
 ```
 
-**2. Data Extracted from the New Document:**
+**2. Combined Data Extracted from All Provided Documents:**
 ```json
 {json.dumps(source_data, indent=2)}
 ```
@@ -186,63 +183,105 @@ async def read_root():
     """A simple root endpoint to confirm the API is running."""
     return {"message": "Welcome to the Document Processing API. Visit /docs for details."}
 
-@app.post("/extract/", tags=["1. Simple Extraction"])
-async def extract_information_from_files(files: List[UploadFile] = File(...)):
-    """
-    Uploads one or more documents and performs raw key-value extraction on each.
-    """
-    async def process_single_file(file: UploadFile):
-        # Save file temporarily to disk to be processed
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-            temp_path = temp_file.name
-        
-        try:
-            return await extract_raw_info_from_doc(temp_path, file.filename)
-        finally:
-            os.remove(temp_path) # Clean up the temporary file
-
-    # Process all uploaded files concurrently
-    tasks = [process_single_file(file) for file in files]
-    results_list = await asyncio.gather(*tasks)
-    return {files[i].filename: results_list[i] for i in range(len(files))}
-
-@app.get("/form-schema", tags=["2. Intelligent Form Filling"])
+@app.get("/form-schema", tags=["Form Filling"])
 async def get_form_schema():
     """Returns the JSON schema (list of fields) for the insurance form."""
     return {"fields": INSURANCE_FORM_FIELDS}
 
-@app.post("/fill-form/")
-async def fill_form(file: UploadFile = File(...), current_form_state: str = Form(...)):
+@app.post("/extract/", tags=["Extraction"])
+async def extract_information_from_files(files: List[UploadFile] = File(...)):
+    """
+    Uploads one or more documents and performs raw key-value extraction on each.
+    Returns a dictionary with filenames as keys and extracted data as values.
+    """
+    async def process_single_file(file: UploadFile):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+        try:
+            return await extract_raw_info_from_doc(temp_path, file.filename)
+        finally:
+            os.remove(temp_path)
+
+    tasks = [process_single_file(file) for file in files]
+    results_list = await asyncio.gather(*tasks)
+    return {files[i].filename: results_list[i] for i in range(len(files))}
+
+
+@app.post("/fill-form/", tags=["Form Filling"])
+async def intelligently_fill_form(
+    files: List[UploadFile] = File(...),
+    current_form_state: str = Form(...)
+):
+    """
+    Uploads one or more documents and the current state of a form. It extracts data
+    from all documents, combines it, and uses an LLM to fill in the missing fields.
+    Returns the complete, updated form state. This is the one-shot filling process.
+    """
     try:
-        # Parse JSON state
-        form_state = json.loads(current_form_state)
-        if not isinstance(form_state, dict):
-            raise ValueError("Form state must be a JSON object.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON format for current_form_state: {e}")
+        form_dict = json.loads(current_form_state)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format for current_form_state.")
 
-    # 1. Save uploaded file temporarily
-    import tempfile, shutil
-    tmp_path = tempfile.mktemp()
-    with open(tmp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # --- Step 1: Extract data from all uploaded files concurrently ---
+    async def process_file_for_filling(file: UploadFile):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = temp_file.name
+        try:
+            return file.filename, await extract_raw_info_from_doc(temp_path, file.filename)
+        finally:
+            os.remove(temp_path)
 
-    # 2. Extract information
-    doc_data = extract_info_from_doc(tmp_path)
+    print(f"📄 Processing {len(files)} document(s)...")
+    extraction_tasks = [process_file_for_filling(file) for file in files]
+    extraction_results = await asyncio.gather(*extraction_tasks)
+    
+    # --- Step 2: Combine all extracted data into a single dictionary ---
+    combined_extracted_data = {}
+    source_documents = {}
+    for filename, data in extraction_results:
+        source_documents[filename] = data
+        if data and "error" not in data and "warning" not in data:
+            combined_extracted_data.update(data)
 
-    # 3. Find missing fields
-    missing_fields = [f for f in INSURANCE_FORM_FIELDS if not form_state.get(f)]
-
-    # 4. Ask LLM to fill missing ones
-    newly_filled = fill_missing_fields_with_llm(missing_fields, doc_data)
-
-    # 5. Merge into current state
-    form_state.update(newly_filled)
-
-    return {"updated_form": form_state, "newly_filled": newly_filled}
-
-# ---------- Uvicorn Runner for Local Development ----------
-app = FastAPI()
-
+    if not combined_extracted_data:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "message": "Could not extract any usable data from the provided document(s).",
+                "source_documents": source_documents,
+                "updated_form": form_dict
+            }
+        )
+    
+    # --- Step 3: Identify missing fields and call the intelligent filler ---
+    missing_fields = [k for k, v in form_dict.items() if not v]
+    if not missing_fields:
+        return {
+            "message": "No fields were missing. No update needed.",
+            "source_documents": source_documents,
+            "updated_form": form_dict
+        }
+        
+    print("🧠 Asking LLM to fill missing fields with combined data...")
+    newly_filled_data = await fill_missing_fields_with_llm(missing_fields, combined_extracted_data)
+    
+    # --- Step 4: Update the form state and prepare the response ---
+    updated_form_dict = form_dict.copy()
+    if newly_filled_data:
+        for key, value in newly_filled_data.items():
+            if key in missing_fields: # Only update fields that were originally empty
+                updated_form_dict[key] = value
+        message = f"Successfully attempted to fill {len(newly_filled_data)} field(s)."
+    else:
+        message = "The documents did not contain relevant information for the missing fields."
+    
+    return {
+        "message": message,
+        "newly_filled_data": newly_filled_data,
+        "updated_form": updated_form_dict,
+        "source_documents": source_documents,
+    }
