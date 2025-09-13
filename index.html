@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claim Approval Form</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; background-color: #f4f7f6; color: #333; max-width: 900px; margin: 2rem auto; padding: 1rem; }
+        h1, h2 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        .container { background-color: #ffffff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin-bottom: 2rem; }
+        label { font-weight: bold; display: block; margin-bottom: 5px; }
+        input[type="file"], input[type="text"] { width: calc(100% - 16px); display: block; margin-bottom: 1rem; border: 1px solid #ccc; padding: 8px; border-radius: 4px; }
+        button { background-color: #3498db; color: white; border: none; padding: 10px 18px; border-radius: 4px; font-size: 1rem; cursor: pointer; transition: background-color 0.2s; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+        .results { margin-top: 1rem; background-color: #2c3e50; color: #ecf0f1; padding: 1rem; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; font-family: 'Courier New', Courier, monospace; max-height: 400px; overflow-y: auto; }
+        .hidden { display: none; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 2rem; }
+        .form-field { margin-bottom: 0.5rem; }
+        .status { margin-top: 1rem; padding: 10px; border-radius: 4px; }
+        .success { background-color: #e8f5e9; color: #2e7d32; }
+        .info { background-color: #e3f2fd; color: #1565c0; }
+        .error { background-color: #ffebee; color: #c62828; }
+    </style>
+</head>
+<body>
+
+    <h1>📄 Claim Approval Form</h1>
+
+    <!-- Section 2: Claim Request Form -->
+    <div class="container">
+        <h2>Claim Request Form</h2>
+        <p>Upload a document to automatically fill the insurance claim form below. You can also edit fields manually before uploading.</p>
+        
+        <div id="insurance-form-container">
+            <!-- Form fields will be dynamically inserted here -->
+        </div>
+
+        <div style="margin-top: 1.5rem;">
+            <label for="filler-file-input">Upload Document to Fill Form:</label>
+            <input type="file" id="filler-file-input" required>
+            
+            <label for="supported-docs-input" style="margin-top: 1rem;">Upload Supported Documents:</label>
+            <input type="file" id="supported-docs-input" multiple>
+            
+            <button id="fill-form-button">Upload & Fill Form</button>
+        </div>
+        
+        <div style="margin-top: 1.5rem;">
+            <button id="send-insurance-button">Send to Insurance Company</button>
+            <div id="send-confirmation" class="status hidden success"></div>
+        </div>
+        
+        <div id="filler-status" class="status hidden"></div>
+        <div id="filler-results" class="results hidden"></div>
+    </div>
+
+
+<script>
+    const API_BASE_URL = 'http://127.0.0.1:8000';
+
+    // --- INTELLIGENT FORM FILLER LOGIC ---
+    const formContainer = document.getElementById('insurance-form-container');
+    const fillerFileInput = document.getElementById('filler-file-input');
+    const supportedDocsInput = document.getElementById('supported-docs-input');
+    const fillFormButton = document.getElementById('fill-form-button');
+    const fillerStatus = document.getElementById('filler-status');
+    const fillerResults = document.getElementById('filler-results');
+    const sendInsuranceButton = document.getElementById('send-insurance-button');
+    const sendConfirmation = document.getElementById('send-confirmation');
+
+    // Function to render the form fields on the page
+    function renderForm(fields) {
+        formContainer.innerHTML = ''; // Clear previous form
+        const grid = document.createElement('div');
+        grid.className = 'form-grid';
+        for (const field of fields) {
+            const fieldDiv = document.createElement('div');
+            fieldDiv.className = 'form-field';
+            
+            const label = document.createElement('label');
+            label.htmlFor = `field-${field}`;
+            label.textContent = field;
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = `field-${field}`;
+            input.name = field;
+            input.placeholder = "Empty...";
+            
+            fieldDiv.appendChild(label);
+            fieldDiv.appendChild(input);
+            grid.appendChild(fieldDiv);
+        }
+        formContainer.appendChild(grid);
+    }
+
+    // Function to update the form inputs with new data
+    function updateFormValues(formState) {
+        for (const [key, value] of Object.entries(formState)) {
+            const input = document.getElementById(`field-${key}`);
+            if (input) {
+                input.value = value;
+            }
+        }
+    }
+
+    // Function to get the current state from the form inputs
+    function getCurrentFormState() {
+        const state = {};
+        const inputs = formContainer.querySelectorAll('input[type="text"]');
+        inputs.forEach(input => {
+            state[input.name] = input.value;
+        });
+        return state;
+    }
+
+    // Fetch the schema and render the form on page load
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/form-schema`);
+            if (!response.ok) throw new Error('Network response was not ok');
+            const data = await response.json();
+            renderForm(data.fields);
+        } catch (error) {
+            formContainer.innerHTML = `<p class="error">Error: Could not load form schema. Is the backend server running?</p>`;
+            console.error('Failed to fetch form schema:', error);
+        }
+    });
+
+    // Handle the form filling submission
+    fillFormButton.addEventListener('click', async () => {
+        if (fillerFileInput.files.length === 0) {
+            alert('Please select a file to upload.');
+            return;
+        }
+
+        const file = fillerFileInput.files[0];
+        const currentFormState = getCurrentFormState();
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('current_form_state', JSON.stringify(currentFormState));
+
+        // Append supported documents if any
+        for (const doc of supportedDocsInput.files) {
+            formData.append('supported_docs', doc);
+        }
+
+        fillFormButton.disabled = true;
+        fillFormButton.textContent = 'Processing...';
+        fillerStatus.classList.add('hidden');
+        fillerResults.classList.add('hidden');
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/fill-form/`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            const data = await response.json();
+            
+            if (!response.ok) {
+                fillerStatus.textContent = `Error: ${data.detail || data.message}`;
+                fillerStatus.className = 'status error';
+            } else {
+                fillerStatus.textContent = data.message;
+                fillerStatus.className = 'status ' + (Object.keys(data.newly_filled_data || {}).length > 0 ? 'success' : 'info');
+                
+                // Update the form on the page with the new state from the server
+                updateFormValues(data.updated_form);
+
+
+            }
+        } catch (error) {
+            fillerStatus.textContent = `Network Error: ${error.message}`;
+            fillerStatus.className = 'status error';
+        } finally {
+            fillerStatus.classList.remove('hidden');
+            fillFormButton.disabled = false;
+            fillFormButton.textContent = 'Upload & Fill Form';
+        }
+    });
+
+    // Dummy send to insurance company button logic
+    sendInsuranceButton.addEventListener('click', () => {
+        sendConfirmation.textContent = 'Sent to Insurance Company!';
+        sendConfirmation.classList.remove('hidden');
+        setTimeout(() => {
+            sendConfirmation.textContent = 'Confirmed!';
+        }, 1500);
+    });
+
+    // --- SIMPLE EXTRACTOR LOGIC ---
+    const extractButton = document.getElementById('extract-button');
+    const extractorFileInput = document.getElementById('extractor-file-input');
+    const extractorResults = document.getElementById('extractor-results');
+
+    extractButton.addEventListener('click', async () => {
+        if (extractorFileInput.files.length === 0) {
+            alert('Please select files for extraction.');
+            return;
+        }
+        
+        const formData = new FormData();
+        for (const file of extractorFileInput.files) {
+            formData.append('files', file);
+        }
+
+        extractButton.disabled = true;
+        extractButton.textContent = 'Extracting...';
+        extractorResults.classList.add('hidden');
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/extract/`, {
+                method: 'POST',
+                body: formData,
+            });
+            const data = await response.json();
+            extractorResults.textContent = JSON.stringify(data, null, 2);
+            extractorResults.classList.remove('hidden');
+        } catch (error) {
+            extractorResults.textContent = `Error: ${error.message}`;
+            extractorResults.classList.remove('hidden');
+        } finally {
+            extractButton.disabled = false;
+            extractButton.textContent = 'Extract Raw Data';
+        }
+    });
+</script>
+
+</body>
+</html>
