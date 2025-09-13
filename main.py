@@ -213,70 +213,35 @@ async def get_form_schema():
     """Returns the JSON schema (list of fields) for the insurance form."""
     return {"fields": INSURANCE_FORM_FIELDS}
 
-@app.post("/fill-form/", tags=["2. Intelligent Form Filling"])
-async def intelligently_fill_form(
-    file: UploadFile = File(...),
-    current_form_state: str = Form(...)
-):
-    """
-    Uploads a single document and the current state of a form.
-    It extracts data from the document and uses an LLM to fill in the missing fields.
-    Returns the complete, updated form state.
-    """
+@app.post("/fill-form/")
+async def fill_form(file: UploadFile = File(...), current_form_state: str = Form(...)):
     try:
-        form_dict = json.loads(current_form_state)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON format for current_form_state.")
+        # Parse JSON state
+        form_state = json.loads(current_form_state)
+        if not isinstance(form_state, dict):
+            raise ValueError("Form state must be a JSON object.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format for current_form_state: {e}")
 
-    # Save uploaded file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as temp_file:
-        content = await file.read()
-        temp_file.write(content)
-        temp_path = temp_file.name
-    
-    try:
-        # Step 1: Extract raw data from the new document
-        print(f"📄 Processing document: {file.filename}...")
-        doc_data = await extract_raw_info_from_doc(temp_path, file.filename)
-        if not doc_data or "error" in doc_data or "warning" in doc_data:
-             return JSONResponse(
-                status_code=422,
-                content={
-                    "message": f"Could not extract usable data from {file.filename}.",
-                    "extracted_data": doc_data,
-                    "updated_form": form_dict # Return original form
-                }
-            )
-        
-        # Step 2: Identify what's missing in the form state we received
-        missing_fields = [k for k, v in form_dict.items() if not v]
-        if not missing_fields:
-            return {
-                "message": "No fields were missing. No update needed.",
-                "extracted_data": doc_data,
-                "updated_form": form_dict
-            }
-            
-        # Step 3: Use the "intelligent" LLM to map extracted data to missing fields
-        print("🧠 Asking LLM to fill missing fields...")
-        newly_filled_data = await fill_missing_fields_with_llm(missing_fields, doc_data)
-        
-        # Step 4: Update the form state and prepare the response
-        updated_form_dict = form_dict.copy()
-        if newly_filled_data:
-            updated_form_dict.update(newly_filled_data)
-            message = f"Successfully filled {len(newly_filled_data)} field(s)."
-        else:
-            message = "The document did not contain relevant information for the missing fields."
-        
-        return {
-            "message": message,
-            "extracted_data": doc_data,
-            "newly_filled_data": newly_filled_data,
-            "updated_form": updated_form_dict
-        }
-    finally:
-        os.remove(temp_path) # Clean up the temporary file
+    # 1. Save uploaded file temporarily
+    import tempfile, shutil
+    tmp_path = tempfile.mktemp()
+    with open(tmp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # 2. Extract information
+    doc_data = extract_info_from_doc(tmp_path)
+
+    # 3. Find missing fields
+    missing_fields = [f for f in INSURANCE_FORM_FIELDS if not form_state.get(f)]
+
+    # 4. Ask LLM to fill missing ones
+    newly_filled = fill_missing_fields_with_llm(missing_fields, doc_data)
+
+    # 5. Merge into current state
+    form_state.update(newly_filled)
+
+    return {"updated_form": form_state, "newly_filled": newly_filled}
 
 # ---------- Uvicorn Runner for Local Development ----------
 app = FastAPI()
