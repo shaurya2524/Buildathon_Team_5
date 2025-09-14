@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PoliSync - Generate Claim Letter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-dark: #1a1a1a;
+            --card-bg: #2b2b2b;
+            --border-color: #444;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --accent-color: #00d4d4;
+            --tag-bg: #4a4a4a;
+            --error-color: #ff6b6b;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            padding: 15px 30px;
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .logo { display: flex; align-items: center; font-size: 24px; font-weight: 700; }
+        .logo i { color: var(--accent-color); margin-right: 10px; }
+
+        main { max-width: 1200px; margin: 0 auto; }
+        h1 { margin-bottom: 20px; }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+        
+        .card-title {
+            display: flex; align-items: center; font-size: 18px;
+            font-weight: 600; margin-bottom: 20px;
+        }
+        .card-title i { font-size: 20px; margin-right: 12px; color: var(--text-secondary); }
+
+        /* Uploader Styles */
+        .uploader { text-align: center; border: 2px dashed var(--border-color); padding: 40px; border-radius: 12px; }
+        .uploader label {
+            background-color: var(--accent-color); color: var(--bg-dark);
+            padding: 12px 25px; font-weight: 600; border-radius: 8px; cursor: pointer;
+        }
+        .uploader input[type="file"] { display: none; }
+        #file-list { margin-top: 20px; color: var(--text-secondary); }
+
+        .action-area { display: flex; justify-content: flex-end; gap: 15px; margin-bottom: 20px; }
+        .btn {
+            background-color: var(--tag-bg); color: var(--text-primary);
+            border: none; padding: 12px 25px; font-size: 16px;
+            font-weight: 600; border-radius: 8px; cursor: pointer; transition: opacity 0.3s;
+        }
+        .btn.primary { background-color: var(--accent-color); color: var(--bg-dark); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:hover:not(:disabled) { opacity: 0.9; }
+
+        /* Results and Report Styles */
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .data-card { background-color: #333; padding: 15px; border-radius: 8px; }
+        .data-card h4 { border-bottom: 1px solid var(--border-color); padding-bottom: 10px; margin-bottom: 10px; }
+        .data-card code { display: block; white-space: pre-wrap; word-break: break-all; font-size: 13px; max-height: 200px; overflow-y: auto; }
+        
+        #generated-letter-content {
+            white-space: pre-wrap; line-height: 1.7; font-size: 15px;
+            background-color: #111; padding: 20px; border-radius: 8px;
+        }
+
+        /* Spinner and Message Styles */
+        .spinner {
+            border: 4px solid #f3f3f3; border-top: 4px solid var(--accent-color);
+            border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .message { text-align: center; color: var(--text-secondary); padding: 20px; }
+        .error-message { color: var(--error-color); font-weight: 500; }
+
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <div class="logo">
+            <i class="fa-solid fa-shield-halved"></i>
+            <span>PoliSync Claim Generator</span>
+        </div>
+    </header>
+
+    <main>
+        <h1>Generate a Claim Letter from Documents</h1>
+
+        <section class="card">
+            <div class="card-title"><i class="fa-solid fa-file-arrow-up"></i><h2>Step 1: Upload Documents</h2></div>
+            <div class="uploader">
+                <label for="doc-upload">
+                    <i class="fa-solid fa-paperclip"></i> Choose Files
+                </label>
+                <input type="file" id="doc-upload" multiple accept=".pdf,.png,.jpg,.jpeg,.webp">
+                <div id="file-list">Select one or more documents to begin.</div>
+            </div>
+        </section>
+
+        <div class="action-area">
+            <button class="btn" id="upload-btn" disabled><i class="fa-solid fa-cloud-upload"></i> Extract Data from Files</button>
+        </div>
+
+        <section class="card">
+            <div class="card-title"><i class="fa-solid fa-wand-magic-sparkles"></i><h2>Step 2: Review Extracted Data</h2></div>
+            <div id="extracted-data-container">
+                <div class="message">Upload documents to see the extracted data here.</div>
+            </div>
+        </section>
+
+        <div class="action-area">
+            <button class="btn primary" id="generate-letter-btn" disabled><i class="fa-solid fa-file-pen"></i> Generate Claim Letter</button>
+        </div>
+
+        <section class="card">
+            <div class="card-title"><i class="fa-solid fa-flag-checkered"></i><h2>Step 3: View Generated Letter</h2></div>
+            <div id="generated-letter-container">
+                <div class="message">Your generated letter will appear here.</div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- IMPORTANT: CHANGE THIS URL TO YOUR BACKEND API ADDRESS ---
+            const API_BASE_URL = 'https://buildathon-team-5.vercel.app';
+
+            // --- Element References ---
+            const docUpload = document.getElementById('doc-upload');
+            const fileList = document.getElementById('file-list');
+            const uploadBtn = document.getElementById('upload-btn');
+            const generateLetterBtn = document.getElementById('generate-letter-btn');
+            const extractedDataContainer = document.getElementById('extracted-data-container');
+            const generatedLetterContainer = document.getElementById('generated-letter-container');
+
+            // --- State Variable ---
+            let extractedData = {};
+
+            // --- Utility Functions ---
+            const showSpinner = (container) => {
+                container.innerHTML = '<div class="spinner"></div>';
+            };
+
+            const showMessage = (container, text, isError = false) => {
+                container.innerHTML = `<div class="message ${isError ? 'error-message' : ''}">${text}</div>`;
+            };
+
+            // --- Event Listeners ---
+            docUpload.addEventListener('change', () => {
+                if (docUpload.files.length > 0) {
+                    fileList.textContent = `${docUpload.files.length} file(s) selected.`;
+                    uploadBtn.disabled = false;
+                } else {
+                    fileList.textContent = 'Select one or more documents to begin.';
+                    uploadBtn.disabled = true;
+                }
+            });
+
+            uploadBtn.addEventListener('click', async () => {
+                if (docUpload.files.length === 0) return;
+
+                const formData = new FormData();
+                for (const file of docUpload.files) {
+                    formData.append('files', file);
+                }
+
+                // Reset state and UI
+                showSpinner(extractedDataContainer);
+                showMessage(generatedLetterContainer, 'Your generated letter will appear here.');
+                generateLetterBtn.disabled = true;
+                extractedData = {};
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/extract/`, {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Server error: ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+                    extractedData = data;
+                    renderExtractedData(data);
+                    generateLetterBtn.disabled = false;
+
+                } catch (error) {
+                    console.error('Extraction failed:', error);
+                    showMessage(extractedDataContainer, `Extraction Failed: ${error.message}`, true);
+                }
+            });
+
+            generateLetterBtn.addEventListener('click', async () => {
+                if (Object.keys(extractedData).length === 0) return;
+
+                showSpinner(generatedLetterContainer);
+                
+                const payload = {
+                    extracted_data: extractedData
+                };
+
+                try {
+                    const response = await fetch(`${API_BASE_URL}/generate-claim-letter/`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.detail || 'Failed to generate letter.');
+                    }
+                    
+                    const result = await response.json();
+                    renderClaimLetter(result.claim_letter_content);
+
+                } catch (error) {
+                    console.error('Letter generation failed:', error);
+                    showMessage(generatedLetterContainer, `Generation Failed: ${error.message}`, true);
+                }
+            });
+
+            // --- Rendering Functions ---
+            function renderExtractedData(data) {
+                if (Object.keys(data).length === 0) {
+                    showMessage(extractedDataContainer, 'No data could be extracted from the documents.', true);
+                    return;
+                }
+
+                extractedDataContainer.innerHTML = '<div class="results-grid"></div>';
+                const grid = extractedDataContainer.querySelector('.results-grid');
+
+                for (const filename in data) {
+                    const card = document.createElement('div');
+                    card.className = 'data-card';
+                    const content = data[filename];
+                    
+                    let contentHtml = `<h4><i class="fa-solid fa-file"></i> ${filename}</h4>`;
+                    if (content.error) {
+                        contentHtml += `<code class="error-message">${content.error}</code>`;
+                    } else {
+                        contentHtml += `<code>${JSON.stringify(content, null, 2)}</code>`;
+                    }
+                    card.innerHTML = contentHtml;
+                    grid.appendChild(card);
+                }
+            }
+
+            function renderClaimLetter(letterContent) {
+                // Convert markdown-style bold (**text**) to HTML <strong> tags
+                const formattedContent = letterContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                generatedLetterContainer.innerHTML = `<div id="generated-letter-content">${formattedContent}</div>`;
+            }
+        });
+    </script>
+
+</body>
+</html>
