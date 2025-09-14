@@ -146,25 +146,22 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 def generate_message(customer_name, policy_name, renewal_date, company_name):
     """
-    Generate a WhatsApp-friendly renewal reminder message using Groq Qwen LLM.
+    Generate a professional SMS renewal reminder message with a payment link.
     """
     prompt = f"""
-    Write a professional but friendly WhatsApp renewal reminder message (4–5 sentences) 
+    Write a professional but friendly SMS renewal reminder message (3–4 sentences) 
     for a customer named {customer_name}.
     They hold an insurance policy of type '{policy_name}' with {company_name}.
     Inform them that their renewal date is approaching on {renewal_date}.
     
-    Format the message for WhatsApp with:
-    - Paragraph breaks using \\n\\n
-    - Important words (like policy type, company name, and renewal date) in *bold*
-    - A warm thank you and well wishes at the end.
-    
+    Add a dummy payment link in the message, formatted like: 👉 https://pay.link  
+    Use short paragraphs separated by \\n (maximum 2 line breaks).  
+    Highlight important details using CAPS (since SMS doesn't support bold/italics).  
     Return only the final message inside double quotes.
-    also dont put any team name or company name in the message.
     """
 
     response = groq_client.chat.completions.create(
-        model=TEXT_MODEL,
+        model="qwen/qwen3-32b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
     )
@@ -172,17 +169,17 @@ def generate_message(customer_name, policy_name, renewal_date, company_name):
     full_text = response.choices[0].message.content
     print("Raw LLM Output:\n", full_text)
 
-    # Extract longest quoted block (ensures full message is captured)
+    # Extract longest quoted block
     matches = re.findall(r'"(.*?)"', full_text, re.DOTALL)
     if matches:
         message_text = max(matches, key=len).strip()
     else:
         message_text = full_text.strip()
 
-    # Convert escaped \n into real newlines
+    # Ensure Twilio-safe formatting
     message_text = message_text.replace("\\n", "\n")
 
-    print("\n✅ Final WhatsApp-ready Message:\n", message_text)
+    print("\n✅ Final SMS-ready Message:\n", message_text)
     return message_text
 
 
