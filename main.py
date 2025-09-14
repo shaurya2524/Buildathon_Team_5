@@ -5,16 +5,19 @@ import base64
 import mimetypes
 import asyncio
 import tempfile
+import re
 from io import BytesIO
 from typing import List, Dict, Any
 
 # --- Core Dependencies ---
 import pdfplumber
 from PIL import Image
-from groq import AsyncGroq # Use the Asynchronous client for FastAPI
+from groq import AsyncGroq, Groq
+from twilio.rest import Client
 
 # --- FastAPI Dependencies ---
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Body
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -22,19 +25,35 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-# Access variables
-api_key = os.getenv("GROQ_API_KEY")
-# ---------- CONFIG & API CLIENT ----------
+# ---------- CONFIG & API CLIENTS ----------
 # For reliability, using standard Groq models. You can change these via environment variables.
-TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "qwen/qwen3-32b")  # text-only on Groq
-VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")  # image+text
+TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "qwen/qwen3-32b")
+VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
-# Initialize the Asynchronous Groq client.
+# Initialize the Asynchronous Groq client for document processing.
 try:
-    client = AsyncGroq()
+    async_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+except Exception as e:
+    print(f"FATAL: Failed to initialize AsyncGroq client. Is GROQ_API_KEY set? Error: {e}")
+    sys.exit(1)
+
+# Initialize Synchronous Groq client for WhatsApp message generation
+try:
+    groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 except Exception as e:
     print(f"FATAL: Failed to initialize Groq client. Is GROQ_API_KEY set? Error: {e}")
     sys.exit(1)
+
+# Initialize Twilio client
+try:
+    twilio_client = Client(
+        os.environ["TWILIO_ACCOUNT_SID"],
+        os.environ["TWILIO_AUTH_TOKEN"]
+    )
+except Exception as e:
+    print(f"FATAL: Failed to initialize Twilio client. Are TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN set? Error: {e}")
+    sys.exit(1)
+
 
 # The target schema for our intelligent form filler.
 INSURANCE_FORM_FIELDS = [
@@ -52,7 +71,6 @@ app = FastAPI(
 )
 
 # Add CORS middleware to allow frontend requests.
-# For production, you should restrict this to your frontend's domain.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,6 +78,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- Pydantic Models for Request Bodies ----------
+class PolicyDetails(BaseModel):
+    policyName: str = Field(..., example="Health Insurance")
+    policyNumber: str = Field(..., example="PC_001")
+    insuranceCompany: str = Field(..., example="Acme Insurance")
+
+class RenewalMessagePayload(BaseModel):
+    customerName: str = Field(..., example="John Doe")
+    policy: PolicyDetails
+    renewalDate: str = Field(..., example="25th September 2025")
+    contact: str = Field(..., example="+919876543210", description="Recipient's full number with country code")
+
 
 # ---------- SHARED UTILITY FUNCTIONS ----------
 IMAGE_EXTS = {"png", "jpg", "jpeg", "bmp", "tiff", "webp"}
@@ -105,6 +136,67 @@ def extract_text_from_pdf(file_path: str) -> str:
         print(f"Error reading PDF {file_path}: {e}")
     return text.strip()
 
+# ---------- WHATSAPP NOTIFICATION FUNCTIONS ----------
+
+def generate_message(customer_name, policy_name, renewal_date, company_name):
+    """
+    Generate a WhatsApp-friendly renewal reminder message using Groq Qwen LLM.
+    """
+    prompt = f"""
+    Write a professional but friendly WhatsApp renewal reminder message (4–5 sentences) 
+    for a customer named {customer_name}.
+    They hold an insurance policy of type '{policy_name}' with {company_name}.
+    Inform them that their renewal date is approaching on {renewal_date}.
+    
+    Format the message for WhatsApp with:
+    - Paragraph breaks using \\n\\n
+    - Important words (like policy type, company name, and renewal date) in *bold*
+    - A warm thank you and well wishes at the end.
+    
+    Return only the final message inside double quotes.
+    also dont put any team name or company name in the message.
+    """
+
+    response = groq_client.chat.completions.create(
+        model=TEXT_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+    )
+
+    full_text = response.choices[0].message.content
+    print("Raw LLM Output:\n", full_text)
+
+    # Extract longest quoted block (ensures full message is captured)
+    matches = re.findall(r'"(.*?)"', full_text, re.DOTALL)
+    if matches:
+        message_text = max(matches, key=len).strip()
+    else:
+        message_text = full_text.strip()
+
+    # Convert escaped \n into real newlines
+    message_text = message_text.replace("\\n", "\n")
+
+    print("\n✅ Final WhatsApp-ready Message:\n", message_text)
+    return message_text
+
+
+def send_whatsapp(to_number, message_body):
+    """
+    Send WhatsApp message using Twilio Sandbox.
+    """
+    try:
+        message = twilio_client.messages.create(
+            body=message_body,
+            from_="whatsapp:+14155238886",  # Twilio WhatsApp sandbox number
+            to=f"whatsapp:{to_number}"      # Recipient's WhatsApp number
+        )
+        print("📩 WhatsApp Message sent! SID:", message.sid)
+        return message.sid
+    except Exception as e:
+        print(f"❌ Failed to send WhatsApp message: {e}")
+        raise HTTPException(status_code=500, detail=f"Twilio API Error: {str(e)}")
+
+
 # ---------- ASYNC LLM & PROCESSING FUNCTIONS ----------
 
 async def extract_raw_info_from_doc(file_path: str, filename: str) -> dict:
@@ -125,7 +217,7 @@ async def extract_raw_info_from_doc(file_path: str, filename: str) -> dict:
         else:
             return {"error": f"Unsupported file type: {filename}"}
 
-        resp = await client.chat.completions.create(
+        resp = await async_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You are an AI assistant that extracts information into a single, flat JSON object."},
@@ -162,7 +254,7 @@ You are an intelligent data mapping assistant. Your task is to fill in missing i
 - If the source data is irrelevant or cannot fill any missing fields, return an empty JSON object {{}}.
 """
     try:
-        resp = await client.chat.completions.create(
+        resp = await async_client.chat.completions.create(
             model=TEXT_MODEL,
             messages=[
                 {"role": "system", "content": "You are a data mapping expert that outputs only valid JSON."},
@@ -285,3 +377,41 @@ async def intelligently_fill_form(
         "updated_form": updated_form_dict,
         "source_documents": source_documents,
     }
+
+@app.post("/send-renewal-reminder/", tags=["WhatsApp Notifications"])
+async def send_renewal_reminder(payload: RenewalMessagePayload = Body(...)):
+    """
+    Generates a personalized insurance renewal reminder and sends it via WhatsApp.
+    """
+    print(f"Received renewal request for {payload.customerName} at {payload.contact}")
+    try:
+        # Step 1: Generate the personalized message
+        message_body = await asyncio.to_thread(
+            generate_message,
+            payload.customerName,
+            payload.policy.policyName,
+            payload.renewalDate,
+            payload.policy.insuranceCompany
+        )
+        
+        # Step 2: Send the message via Twilio WhatsApp API
+        message_sid = await asyncio.to_thread(
+            send_whatsapp,
+            payload.contact,
+            message_body
+        )
+
+        return {
+            "success": True,
+            "message": "WhatsApp renewal reminder sent successfully.",
+            "recipient": payload.contact,
+            "twilio_message_sid": message_sid,
+            "sent_message": message_body
+        }
+    except HTTPException as e:
+        # Re-raise HTTP exceptions from send_whatsapp
+        raise e
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
+

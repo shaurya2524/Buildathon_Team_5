@@ -1,6 +1,9 @@
 fastapi
 uvicorn
+pydantic
 python-dotenv
-pdfplumber
-pillow
 groq
+twilio
+pdfplumber
+Pillow
+python-multipart
